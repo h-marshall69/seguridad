@@ -7,16 +7,16 @@ class HybridEncryption:
     def __init__(self):
         self.key_size = 256  # Tamaño de clave predeterminado (bits)
 
-    # --- Key Generation ---
-    def generate_rsa_keys(self):
-        """Generate RSA public and private keys."""
+    def generate_symmetric_key(self, size = 256):
+        return os.urandom(size // 8)
+
+    def generate_rsa_keys(self, public_exponent=65537, key_size=2048):
         private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=2048
+            public_exponent,
+            key_size
         )
         public_key = private_key.public_key()
 
-        # Serialize keys for storage
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -28,29 +28,94 @@ class HybridEncryption:
         )
 
         return private_pem, public_pem
+    
+    def encrypt_with_aes(self, key_path, file_path, output_path):
+        """Encrypt a file using AES encryption."""
+        iv = os.urandom(16)  # Inicialización del vector (IV) para AES
+        with open(key_path, 'rb') as f:
+            key = f.read()
 
-    # --- Symmetric Encryption (AES) ---
-    def encrypt_with_aes(self, data, key):
-        """Encrypt data using AES encryption."""
-        iv = os.urandom(16)  # Initialization vector
-        cipher = Cipher(algorithms.AES(key), modes.CFB(iv))
+        cipher = Cipher(algorithms.AES(key), modes.CFB(iv))  # Crea el cifrador en modo CFB
         encryptor = cipher.encryptor()
-        ciphertext = encryptor.update(data) + encryptor.finalize()
-        return iv + ciphertext
 
-    def decrypt_with_aes(self, ciphertext, key):
-        """Decrypt data using AES encryption."""
-        iv = ciphertext[:16]
-        cipher = Cipher(algorithms.AES(key), modes.CFB(iv))
-        decryptor = cipher.decryptor()
-        plaintext = decryptor.update(ciphertext[16:]) + decryptor.finalize()
-        return plaintext
+        # Abre el archivo de entrada y el archivo de salida
+        with open(file_path, 'rb') as f_in, open(output_path, 'wb') as f_out:
+            # Escribe el IV en el archivo de salida al principio
+            f_out.write(iv)
 
-    # --- Asymmetric Encryption (RSA) ---
-    def encrypt_key_with_rsa(self, key, public_key_pem):
-        """Encrypt AES key with RSA public key."""
+            # Lee y cifra el archivo en bloques
+            while chunk := f_in.read(64 * 1024):  # Leer en bloques de 64KB
+                ciphertext = encryptor.update(chunk)
+                f_out.write(ciphertext)
+
+            # Finaliza el cifrado
+            f_out.write(encryptor.finalize())
+
+        print(f"Archivo cifrado y guardado en: {output_path}")
+
+    def decrypt_with_aes(self, key_path, encrypted_file_path, output_file_path):
+        """Decrypt a file using AES decryption."""
+        # Abrir el archivo cifrado para lectura
+
+        with open(key_path, 'rb') as f:
+            key = f.read()
+
+        with open(encrypted_file_path, 'rb') as f_in, open(output_file_path, 'wb') as f_out:
+            # Leer el IV del principio del archivo cifrado
+            iv = f_in.read(16)
+            
+            # Crear el objeto Cipher con el IV y la clave simétrica
+            cipher = Cipher(algorithms.AES(key), modes.CFB(iv))
+            decryptor = cipher.decryptor()
+            
+            # Leer y descifrar el archivo en bloques
+            while chunk := f_in.read(64 * 1024):  # Leer en bloques de 64KB
+                plaintext = decryptor.update(chunk)
+                f_out.write(plaintext)
+
+            # Finalizar el descifrado
+            f_out.write(decryptor.finalize())
+
+        print(f"Archivo descifrado y guardado en: {output_file_path}")
+
+    def encrypt_key_with_rsa(self, symmetric_key_path, other_public_key_pem_path, output_path):
+        """Cifra la clave simétrica usando RSA y guarda el resultado en un archivo."""
+
+        # Leer la clave simétrica desde el archivo
+        with open(symmetric_key_path, 'rb') as f:
+            key = f.read()
+
+        # Leer la clave pública desde el archivo PEM
+        with open(other_public_key_pem_path, 'rb') as f:
+            public_key_pem = f.read()
+
+        # Cargar la clave pública desde el archivo PEM
         public_key = serialization.load_pem_public_key(public_key_pem)
+
+        # Cifrar la clave simétrica usando la clave pública
         encrypted_key = public_key.encrypt(
+            key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),  # Mask Generation Function (MGF) con SHA256
+                algorithm=hashes.SHA256(),  # Algoritmo de hash usado
+                label=None
+            )
+        )
+
+        # Guardar la clave cifrada en un archivo
+        with open(output_path, 'wb') as f:
+            f.write(encrypted_key)
+
+    def decrypt_key_with_rsa(self, encrypted_symmetric_key_path, private_key_pem_path, output_path):
+
+        with open(encrypted_symmetric_key_path, 'rb') as f:
+            key = f.read()
+
+        with open(private_key_pem_path, 'rb') as f:
+            private_key= f.read()
+
+        private_key = serialization.load_pem_private_key(private_key, password=None)
+        decrypted_key = private_key.decrypt(
             key,
             padding.OAEP(
                 mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -58,62 +123,6 @@ class HybridEncryption:
                 label=None
             )
         )
-        return encrypted_key
 
-    def decrypt_key_with_rsa(self, encrypted_key, private_key_pem):
-        """Decrypt AES key with RSA private key."""
-        private_key = serialization.load_pem_private_key(private_key_pem, password=None)
-        key = private_key.decrypt(
-            encrypted_key,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None
-            )
-        )
-        return key
-
-    # --- Main Functionality ---
-    def hybrid_encrypt(self, data, public_key_pem, symmetric_key):
-        """Encrypt data using hybrid encryption."""
-        # Encrypt the data with AES
-        encrypted_data = self.encrypt_with_aes(data, symmetric_key)
-
-        # Encrypt the AES key with RSA
-        encrypted_key = self.encrypt_key_with_rsa(symmetric_key, public_key_pem)
-
-        return encrypted_data, encrypted_key
-
-    def hybrid_decrypt(self, encrypted_data, encrypted_key, private_key_pem):
-        """Decrypt data using hybrid encryption."""
-        # Decrypt the AES key with RSA
-        aes_key = self.decrypt_key_with_rsa(encrypted_key, private_key_pem)
-
-        # Decrypt the data with AES
-        data = self.decrypt_with_aes(encrypted_data, aes_key)
-
-        return data
-
-
-
-"""
-
-# --- Example Usage ---
-if __name__ == "__main__":
-    # Generate RSA keys
-    private_key_pem, public_key_pem = generate_rsa_keys()
-
-    # Data to encrypt
-    message = b"This is a top-secret message!"
-
-    # Encrypt the data
-    encrypted_data, encrypted_key = hybrid_encrypt(message, public_key_pem)
-    print("Encrypted Data:", encrypted_data)
-    print("Encrypted AES Key:", encrypted_key)
-
-    # Decrypt the data
-    decrypted_message = hybrid_decrypt(encrypted_data, encrypted_key, private_key_pem)
-    print("Decrypted Message:", decrypted_message.decode())
-
-
-"""
+        with open(output_path, 'wb') as f:
+            f.write(decrypted_key)
